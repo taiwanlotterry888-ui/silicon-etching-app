@@ -1,13 +1,36 @@
 # -*- coding: utf-8 -*-
 """
-Silicon Etching Process Evaluator
------------------------------------
-一个用于评估矽（Silicon）蝕刻製程的網頁應用。
-資料來源：課堂 PDF「Etching」中的兩張表格
- (1) General Characteristics of Silicon Etching Operations
- (2) Comparison of Etch Rates for Selected Etchants and Target Materials
-     (Source: Kovacs, Maluf & Peterson, IEEE Proceedings, 1998;
-      Williams & Muller)
+Silicon Etching Process Evaluator (v2 - Physics-based)
+--------------------------------------------------------
+矽（Silicon）蝕刻製程評估系統 - 動力學模型版
+
+本版本核心改進：濕蝕刻與乾蝕刻速率不再只是查表，而是採用
+Arrhenius 動力學方程式，依據使用者輸入的「溫度」實際計算蝕刻速率。
+
+資料來源總覽（詳細出處見程式內各段落註解，以及頁面⑦「參考文獻」）：
+ 1. 課堂 PDF《Etching》(Kovacs, Maluf & Peterson 1998; Williams & Muller)
+    -- 材料選擇比查詢表格
+ 2. Seidel, H. et al. (1990). J. Electrochem. Soc. 137, 3612 / 3626
+    -- KOH 動力學參數 (Ea, R0)，硼掺杂 etch-stop
+ 3. Shikida, M. et al. (2000). Sens. Actuators A 80, 179-188
+    -- KOH / TMAH 動力學參數
+ 4. Tabata, O. et al. -- TMAH 動力學參數
+ 5. Dutta, S. et al. (2011). Microsystem Technologies
+    -- KOH/TMAH/EDP 活化能比較 (Si(110))
+ 6. Gosálvez, M.A., Zubel, I., Viinikka, E. (2015). "Wet Etching of
+    Silicon", in Handbook of Silicon Based MEMS Materials and
+    Technologies (2nd ed.), Ch.22, Table 22.3, Eq.(22.3)
+    -- 彙整上述多篇 KOH/TMAH 動力學數據的二次文獻
+ 7. Ohring, M. (2002). Materials Science of Thin Films (2nd ed.),
+    Ch.5, Eq.(5-9a)(5-9b)
+    -- 乾蝕刻（電漿氟原子化學反應）動力學模型
+
+限制與待查事項（誠實列出，供之後查證）：
+ - KOH/TMAH 的「濃度」相依性目前沒有做成公式，因為 Seidel 浓度公式
+   換算 wt%→mol/L 所需的密度多項式系數 (a0,a1,a2) 追不到原始出處，
+   因此本版本 KOH/TMAH/EDP 均為「固定濃度、僅溫度可調」的模型。
+ - EDP 的 R0 前置因子文獻未給出數值，是用課堂 PDF 的單一實測點
+   (115°C, 0.75 µm/min) 反推得出，非文獻原始數值，UI 會特別註明。
 
 部署方式：
 1. 把整個資料夾 push 到 GitHub
@@ -23,58 +46,91 @@ import matplotlib.pyplot as plt
 st.set_page_config(page_title="Silicon Etching Process Evaluator",
                     layout="wide")
 
-# =========================================================
-# 1. 內建資料庫（依 PDF 表格整理）
-# =========================================================
+KB_EV = 8.617333262e-5  # Boltzmann constant, eV/K
 
-# ---- Table 1: General Characteristics of Silicon Etching Operations ----
-general_wet = pd.DataFrame([
-    {"Etchant": "HF:HNO3:CH3COOH", "Category": "Wet",
-     "Temp_C_min": 25, "Temp_C_max": 25,
-     "EtchRate_um_min_min": 1, "EtchRate_um_min_max": 20,
-     "Selectivity_111_100": None,
-     "Nitride_nm_min": None, "Nitride_note": "Low",
-     "SiO2_nm_min": 10, "SiO2_nm_max": 30,
-     "p++_stop": "No"},
-    {"Etchant": "KOH", "Category": "Wet",
-     "Temp_C_min": 70, "Temp_C_max": 90,
-     "EtchRate_um_min_min": 0.5, "EtchRate_um_min_max": 2,
-     "Selectivity_111_100": "100:1",
-     "Nitride_nm_min": 1, "Nitride_note": "<1",
-     "SiO2_nm_min": 10, "SiO2_nm_max": 10,
-     "p++_stop": "Yes"},
-    {"Etchant": "Ethylene-diamine pyrocatechol (EDP)", "Category": "Wet",
-     "Temp_C_min": 115, "Temp_C_max": 115,
-     "EtchRate_um_min_min": 0.75, "EtchRate_um_min_max": 0.75,
-     "Selectivity_111_100": "35:1",
-     "Nitride_nm_min": 0.1, "Nitride_note": "0.1",
-     "SiO2_nm_min": 0.2, "SiO2_nm_max": 0.2,
-     "p++_stop": "Yes"},
-    {"Etchant": "N(CH3)4OH (TMAH)", "Category": "Wet",
-     "Temp_C_min": 90, "Temp_C_max": 90,
-     "EtchRate_um_min_min": 0.5, "EtchRate_um_min_max": 1.5,
-     "Selectivity_111_100": "50:1",
-     "Nitride_nm_min": 0.1, "Nitride_note": "<0.1",
-     "SiO2_nm_min": 0.1, "SiO2_nm_max": 0.1,
-     "p++_stop": "Yes"},
-    {"Etchant": "SF6 (Dry/Plasma)", "Category": "Dry",
-     "Temp_C_min": 0, "Temp_C_max": 100,
-     "EtchRate_um_min_min": 0.1, "EtchRate_um_min_max": 0.5,
-     "Selectivity_111_100": None,
-     "Nitride_nm_min": 200, "Nitride_note": "200",
-     "SiO2_nm_min": 10, "SiO2_nm_max": 10,
-     "p++_stop": "No"},
-    {"Etchant": "SF6/C4F8 (DRIE)", "Category": "Dry",
-     "Temp_C_min": 20, "Temp_C_max": 80,
-     "EtchRate_um_min_min": 1, "EtchRate_um_min_max": 3,
-     "Selectivity_111_100": None,
-     "Nitride_nm_min": 200, "Nitride_note": "200",
-     "SiO2_nm_min": 10, "SiO2_nm_max": 10,
-     "p++_stop": "No"},
+# =========================================================
+# 1. 濕蝕刻動力學資料庫 (Arrhenius: R = R0 * exp(-Ea/kB T))
+#    單位：R0 以 µm/h 儲存（多數文獻的原始單位），計算後換算成 µm/min
+# =========================================================
+wet_kinetics = pd.DataFrame([
+    # ---- KOH ----
+    {"Etchant": "KOH", "Concentration": "34 wt%", "Plane": "{100}",
+     "Ea_eV": 0.61, "R0_um_h": 3.10e10, "Source": "Seidel et al. 1990"},
+    {"Etchant": "KOH", "Concentration": "34 wt%", "Plane": "{110}",
+     "Ea_eV": 0.60, "R0_um_h": 3.66e10, "Source": "Seidel et al. 1990"},
+    {"Etchant": "KOH", "Concentration": "34 wt%", "Plane": "{100}",
+     "Ea_eV": 0.62, "R0_um_h": 4.44e10, "Source": "Shikida et al. 2000"},
+    {"Etchant": "KOH", "Concentration": "34 wt%", "Plane": "{110}",
+     "Ea_eV": 0.60, "R0_um_h": 5.17e10, "Source": "Shikida et al. 2000"},
+    {"Etchant": "KOH", "Concentration": "34 wt%", "Plane": "{111}",
+     "Ea_eV": 0.48, "R0_um_h": 7.31e6, "Source": "Shikida et al. 2000"},
+    {"Etchant": "KOH", "Concentration": "35 wt%", "Plane": "{100}",
+     "Ea_eV": 0.62, "R0_um_h": 4.16e10, "Source": "Tan et al."},
+    {"Etchant": "KOH", "Concentration": "35 wt%", "Plane": "{111}",
+     "Ea_eV": 0.52, "R0_um_h": 1.84e7, "Source": "Tan et al."},
+    {"Etchant": "KOH", "Concentration": "37 wt%", "Plane": "{100}",
+     "Ea_eV": 0.56, "R0_um_h": 6.06e9, "Source": "Wind et al."},
+    {"Etchant": "KOH", "Concentration": "37 wt%", "Plane": "{110}",
+     "Ea_eV": 0.56, "R0_um_h": 1.21e10, "Source": "Wind et al."},
+    {"Etchant": "KOH", "Concentration": "37 wt%", "Plane": "{111}",
+     "Ea_eV": 0.55, "R0_um_h": 3.93e8, "Source": "Wind et al."},
+    # ---- TMAH ----
+    {"Etchant": "TMAH", "Concentration": "22 wt%", "Plane": "{100}",
+     "Ea_eV": 0.65, "R0_um_h": 6.40e10, "Source": "Tabata et al."},
+    {"Etchant": "TMAH", "Concentration": "22 wt%", "Plane": "{110}",
+     "Ea_eV": 0.39, "R0_um_h": 1.83e7, "Source": "Tabata et al."},
+    {"Etchant": "TMAH", "Concentration": "22 wt%", "Plane": "{111}",
+     "Ea_eV": 0.71, "R0_um_h": 1.56e10, "Source": "Tabata et al."},
+    {"Etchant": "TMAH", "Concentration": "25 wt%", "Plane": "{100}",
+     "Ea_eV": 0.65, "R0_um_h": 5.51e10, "Source": "Shikida et al."},
+    {"Etchant": "TMAH", "Concentration": "25 wt%", "Plane": "{110}",
+     "Ea_eV": 0.64, "R0_um_h": 7.05e10, "Source": "Shikida et al."},
+    {"Etchant": "TMAH", "Concentration": "25 wt%", "Plane": "{111}",
+     "Ea_eV": 0.73, "R0_um_h": 2.55e10, "Source": "Shikida et al."},
 ])
 
-# ---- Table 2: Isotropic / Dry Etchants vs Target material etch rate (nm/min) ----
-# 欄位: 材料的蝕刻速率 (nm/min)。 None 代表 PDF 原表中為 "-"（無數據）。
+# ---- EDP：文獻只給 Ea，R0 用課堂 PDF 單點資料反推 ----
+EDP_EA = 0.34  # eV, Dutta et al. 2011 (Si(110)), 無特定濃度標示
+EDP_REF_T_C = 115.0        # PDF General Characteristics 表：EDP 溫度
+EDP_REF_RATE_UM_MIN = 0.75  # PDF 表：EDP 蝕刻速率 (µm/min)
+
+
+def edp_r0_um_h():
+    """由課堂 PDF 單一資料點反推 EDP 的 Arrhenius 前置因子 R0 (µm/h)。"""
+    T_K = EDP_REF_T_C + 273.15
+    R_um_h = EDP_REF_RATE_UM_MIN * 60.0
+    return R_um_h / np.exp(-EDP_EA / (KB_EV * T_K))
+
+
+def arrhenius_rate_um_min(Ea_eV, R0_um_h, T_C):
+    """Arrhenius: R = R0 * exp(-Ea/kB T)，回傳 µm/min。"""
+    T_K = T_C + 273.15
+    R_um_h = R0_um_h * np.exp(-Ea_eV / (KB_EV * T_K))
+    return R_um_h / 60.0
+
+
+# =========================================================
+# 2. 乾蝕刻（電漿）動力學模型
+#    出處：Ohring, M. (2002) Materials Science of Thin Films,
+#    2nd ed., Ch.5, Eq.(5-9a)(5-9b)
+#    Re = A * sqrt(T) * C_F * exp(-Ea/kB T)   單位：Å/min
+#    T: 基板溫度 (K)；C_F: 氟原子濃度 (atoms/cm^3)
+# =========================================================
+DRY_PARAMS = {
+    "Si":   {"A": 2.91e-12, "Ea_eV": 0.108},
+    "SiO2": {"A": 6.14e-13, "Ea_eV": 0.163},
+}
+
+
+def dry_etch_rate_A_min(material, T_C, C_F):
+    T_K = T_C + 273.15
+    p = DRY_PARAMS[material]
+    return p["A"] * np.sqrt(T_K) * C_F * np.exp(-p["Ea_eV"] / (KB_EV * T_K))
+
+
+# =========================================================
+# 3. 蝕刻劑 × 材料 選擇比查詢資料庫（沿用課堂 PDF 表格）
+# =========================================================
 etchant_material_rate = pd.DataFrame([
     {"Etchant": "Concentrated HF (49%)", "Type": "Wet",
      "TargetMaterial": "Silicon oxides",
@@ -141,9 +197,7 @@ etchant_material_rate = pd.DataFrame([
 MATERIAL_COLS = ["Polysilicon_n+", "Polysilicon_undoped", "SiO2",
                   "SiNitride", "PSG", "Aluminum", "Titanium", "Photoresist"]
 
-# {111} face angle for <100> silicon wafers (constant used in KOH/TMAH/EDP anisotropic etching)
-ANGLE_111 = 54.7  # degrees
-
+ANGLE_111 = 54.7  # {111} 面角度 (度)，異向性蝕刻幾何常數
 
 # =========================================================
 # Sidebar 導覽
@@ -153,11 +207,12 @@ page = st.sidebar.radio(
     "選擇功能模組",
     [
         "① 首頁說明",
-        "② 濕蝕刻速率計算器",
-        "③ 蝕刻劑材料選擇比查詢",
-        "④ 異向性蝕刻剖面模擬器",
-        "⑤ 乾蝕刻（電漿）計算器",
-        "⑥ 蝕刻時間反算 / Mask建議",
+        "② 濕蝕刻動力學計算器（KOH / TMAH / EDP）",
+        "③ 乾蝕刻化學動力學計算器（F原子模型）",
+        "④ 蝕刻劑材料選擇比查詢",
+        "⑤ 異向性蝕刻剖面模擬器",
+        "⑥ Mask 材料建議",
+        "⑦ 參考文獻與資料來源",
     ],
 )
 
@@ -165,74 +220,191 @@ page = st.sidebar.radio(
 # ① 首頁
 # =========================================================
 if page == "① 首頁說明":
-    st.title("矽蝕刻製程評估系統")
+    st.title("矽蝕刻製程評估系統（動力學模型版）")
     st.markdown("""
-本應用依據課堂 PDF「Etching」內容建置，目的是協助工程師快速評估矽蝕刻製程的
-**蝕刻速率、材料選擇比與蝕刻輪廓**，涵蓋濕蝕刻（Wet Etching）與乾蝕刻
-（Dry/Plasma Etching）兩大類。
+本版本的核心改進：**濕蝕刻與乾蝕刻速率不再是單純查表**，而是採用
+Arrhenius 動力學方程式 $R = R_0 \\cdot e^{-E_a/k_BT}$，
+依照使用者輸入的**實際溫度**去計算蝕刻速率，所有係數（$E_a$、$R_0$）
+皆標註文獻出處，可在頁面⑦「參考文獻」逐條查核。
 
-### 功能模組
-| 模組 | 功能 | 對應 PDF 內容 |
+### 模組總覽
+| 模組 | 物理模型 | 可調參數 |
 |---|---|---|
-| 濕蝕刻速率計算器 | 依蝕刻劑/溫度查詢蝕刻速率、{111}/{100}選擇比、p++ etch stop | General Characteristics 表 |
-| 蝕刻劑材料選擇比查詢 | 查詢特定蝕刻劑對各材料(SiO2/Nitride/PSG/Al/Ti/PR)的蝕刻速率並算選擇比 | Isotropic Etchants 表 |
-| 異向性蝕刻剖面模擬器 | 依 Mask 開口寬度、蝕刻深度模擬 KOH/TMAH 異向性蝕刻的剖面（54.7°） | Anisotropic Etching 頁 |
-| 乾蝕刻計算器 | 依氣體/功率查詢蝕刻速率 | Dry Etchants 表 |
-| 蝕刻時間反算/Mask建議 | 輸入目標深度反算所需時間；依選擇比建議 Mask 材料 | 綜合應用 |
+| 濕蝕刻動力學計算器 | Arrhenius（固定濃度） | 蝕刻劑、晶面、文獻來源、溫度 |
+| 乾蝕刻化學動力學計算器 | Arrhenius + 氟原子濃度模型 | 材料、溫度、氟原子濃度 |
+| 蝕刻劑材料選擇比查詢 | 查表（課堂 PDF 原始資料） | 蝕刻劑、材料 |
+| 異向性蝕刻剖面模擬器 | 幾何模型（{111}面 54.7°） | 開口寬度、深度 |
+| Mask 材料建議 | 查表 + 選擇比計算 | 蝕刻劑 |
 
-> ⚠️ 資料皆為 PDF 課程投影片所附之參考值，實際蝕刻速率會因設備、濃度、溫度、
-> 曝露面積與微結構而異（如 PDF 表格備註所述）。
+### 已知限制（誠實聲明）
+- KOH / TMAH 的「濃度」目前**不是**可連續調整的變數，僅能在文獻報告過的
+  固定濃度中選擇（例如 KOH 34/35/37 wt%），因為 wt%→mol/L 換算所需的
+  密度公式係數查無可靠原始出處，強行套用會誤導使用者。
+- EDP 的前置因子 $R_0$ 是由課堂 PDF 單點資料反推，非文獻直接數值。
 """)
 
 # =========================================================
-# ② 濕蝕刻速率計算器
+# ② 濕蝕刻動力學計算器
 # =========================================================
-elif page == "② 濕蝕刻速率計算器":
-    st.header("濕蝕刻 / 乾蝕刻 速率計算器")
-    st.caption("資料來源：General Characteristics of Silicon Etching Operations")
+elif page == "② 濕蝕刻動力學計算器（KOH / TMAH / EDP）":
+    st.header("濕蝕刻動力學計算器")
+    st.latex(r"R = R_0 \cdot e^{-E_a / k_B T}")
+    st.caption("固定濃度模型：濃度已內建於所選文獻資料組中，僅溫度可調整。")
 
-    etchant_choice = st.selectbox("選擇蝕刻劑", general_wet["Etchant"].tolist())
-    row = general_wet[general_wet["Etchant"] == etchant_choice].iloc[0]
+    etchant_choice = st.selectbox("選擇蝕刻劑", ["KOH", "TMAH", "EDP"])
+
+    if etchant_choice in ["KOH", "TMAH"]:
+        sub = wet_kinetics[wet_kinetics["Etchant"] == etchant_choice]
+        # 讓使用者選擇 濃度+晶面+文獻來源 的組合
+        options = sub.apply(
+            lambda r: f"{r['Concentration']} | {r['Plane']} | {r['Source']}",
+            axis=1).tolist()
+        choice = st.selectbox("選擇文獻資料組（濃度 / 晶面 / 研究團隊）", options)
+        idx = options.index(choice)
+        row = sub.iloc[idx]
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("活化能 Ea (eV)", f"{row['Ea_eV']}")
+            st.metric("濃度", row["Concentration"])
+        with col2:
+            st.metric("前置因子 R0 (µm/h)", f"{row['R0_um_h']:.3e}")
+            st.metric("晶面", row["Plane"])
+        st.caption(f"資料來源：{row['Source']}（詳見頁面⑦）")
+
+        T_C = st.slider("蝕刻溫度 (°C)", 20.0, 130.0, 80.0, 1.0)
+        rate = arrhenius_rate_um_min(row["Ea_eV"], row["R0_um_h"], T_C)
+        st.success(f"預估蝕刻速率：**{rate:.3f} µm/min**"
+                    f"（{rate*60:.2f} µm/h）　＠ {T_C:.0f}°C")
+
+        # Arrhenius 曲線圖
+        T_range = np.linspace(20, 130, 200)
+        R_range = [arrhenius_rate_um_min(row["Ea_eV"], row["R0_um_h"], t)
+                   for t in T_range]
+        fig, ax = plt.subplots(figsize=(6, 3.5))
+        ax.plot(T_range, R_range, 'b-')
+        ax.axvline(T_C, color='red', linestyle='--', alpha=0.6)
+        ax.plot([T_C], [rate], 'ro')
+        ax.set_xlabel("Temperature (°C)")
+        ax.set_ylabel("Etch rate (µm/min)")
+        ax.set_yscale('log')
+        ax.set_title(f"{etchant_choice} Arrhenius plot ({row['Plane']}, {row['Concentration']})")
+        ax.grid(alpha=0.3)
+        st.pyplot(fig)
+
+        st.markdown("---")
+        st.subheader("目標深度 → 預估時間")
+        target_depth_um = st.number_input("目標蝕刻深度 (µm)", min_value=0.0,
+                                           value=100.0, step=10.0)
+        if rate > 0:
+            st.info(f"預估所需時間：約 **{target_depth_um/rate:.1f} 分鐘**")
+
+    else:  # EDP
+        st.warning("⚠️ EDP 的前置因子 R0 並非文獻直接給出，"
+                    "而是用課堂 PDF 的單點資料"
+                    f"（{EDP_REF_T_C:.0f}°C, {EDP_REF_RATE_UM_MIN} µm/min）"
+                    "反推計算，準確度僅供參考。")
+        R0 = edp_r0_um_h()
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("活化能 Ea (eV)", f"{EDP_EA}")
+            st.caption("來源：Dutta et al. 2011（Si(110)）")
+        with col2:
+            st.metric("反推前置因子 R0 (µm/h)", f"{R0:.3e}")
+            st.caption("由課堂 PDF 單點資料反推")
+
+        T_C = st.slider("蝕刻溫度 (°C)", 60.0, 130.0, 115.0, 1.0)
+        rate = arrhenius_rate_um_min(EDP_EA, R0, T_C)
+        st.success(f"預估蝕刻速率：**{rate:.3f} µm/min**　＠ {T_C:.0f}°C")
+
+        T_range = np.linspace(60, 130, 200)
+        R_range = [arrhenius_rate_um_min(EDP_EA, R0, t) for t in T_range]
+        fig, ax = plt.subplots(figsize=(6, 3.5))
+        ax.plot(T_range, R_range, 'g-')
+        ax.axvline(T_C, color='red', linestyle='--', alpha=0.6)
+        ax.plot([T_C], [rate], 'ro')
+        ax.plot([EDP_REF_T_C], [EDP_REF_RATE_UM_MIN], 'k*', markersize=12,
+                label='PDF 實測點')
+        ax.set_xlabel("Temperature (°C)")
+        ax.set_ylabel("Etch rate (µm/min)")
+        ax.legend()
+        ax.set_title("EDP Arrhenius plot（R0反推版）")
+        ax.grid(alpha=0.3)
+        st.pyplot(fig)
+
+    st.markdown("---")
+    st.subheader("完整濕蝕刻動力學資料表（KOH / TMAH）")
+    st.dataframe(wet_kinetics, use_container_width=True)
+
+# =========================================================
+# ③ 乾蝕刻化學動力學計算器
+# =========================================================
+elif page == "③ 乾蝕刻化學動力學計算器（F原子模型）":
+    st.header("乾蝕刻化學動力學計算器")
+    st.latex(r"R_e = A \cdot T^{1/2} \cdot C_F \cdot e^{-E_a/k_BT}")
+    st.caption("出處：Ohring, M. (2002) Materials Science of Thin Films, "
+               "2nd ed., Eq.(5-9a)(5-9b)。R_e 單位 Å/min，T 為基板溫度(K)，"
+               "C_F 為氟原子濃度 (atoms/cm³)。")
 
     col1, col2 = st.columns(2)
     with col1:
-        st.metric("蝕刻類別", row["Category"])
-        st.metric("建議溫度範圍 (°C)",
-                  f"{row['Temp_C_min']} ~ {row['Temp_C_max']}")
-        st.metric("蝕刻速率範圍 (µm/min)",
-                  f"{row['EtchRate_um_min_min']} ~ {row['EtchRate_um_min_max']}")
+        T_C = st.slider("基板溫度 (°C)", 0.0, 200.0, 25.0, 5.0)
     with col2:
-        st.metric("{111}/{100} 選擇比",
-                  row["Selectivity_111_100"] if row["Selectivity_111_100"] else "無資料")
-        st.metric("p++ Etch Stop", row["p++_stop"])
-        st.metric("SiO2 蝕刻速率 (nm/min)",
-                  f"{row['SiO2_nm_min']} ~ {row['SiO2_nm_max']}")
+        C_F_exp = st.slider("氟原子濃度 C_F 指數 (10^x atoms/cm³)",
+                             13.0, 17.0, 15.0, 0.1)
+        C_F = 10 ** C_F_exp
+
+    rate_si = dry_etch_rate_A_min("Si", T_C, C_F)
+    rate_sio2 = dry_etch_rate_A_min("SiO2", T_C, C_F)
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Si 蝕刻速率", f"{rate_si:.2f} Å/min",
+                   help=f"= {rate_si/10:.3f} nm/min")
+    with col2:
+        st.metric("SiO2 蝕刻速率", f"{rate_sio2:.4f} Å/min",
+                   help=f"= {rate_sio2/10:.4f} nm/min")
+    with col3:
+        if rate_sio2 > 0:
+            st.metric("Si : SiO2 選擇比", f"{rate_si/rate_sio2:.1f} : 1")
+        else:
+            st.metric("Si : SiO2 選擇比", "∞（SiO2幾乎不蝕刻）")
+
+    st.markdown("---")
+    st.subheader("溫度 vs. 選擇比 關係圖")
+    st.caption("Si 的活化能 (0.108 eV) 低於 SiO2 (0.163 eV)，"
+               "代表溫度升高時 SiO2 速率上升更快，選擇比會隨溫度升高而下降。")
+    T_range = np.linspace(0, 200, 100)
+    sel_range = [dry_etch_rate_A_min("Si", t, C_F) /
+                 max(dry_etch_rate_A_min("SiO2", t, C_F), 1e-12)
+                 for t in T_range]
+    fig, ax = plt.subplots(figsize=(6, 3.5))
+    ax.plot(T_range, sel_range, 'purple')
+    ax.axvline(T_C, color='red', linestyle='--', alpha=0.6)
+    ax.set_xlabel("Substrate Temperature (°C)")
+    ax.set_ylabel("Si : SiO2 Selectivity")
+    ax.set_title(f"Selectivity vs. Temperature (C_F = 10^{C_F_exp:.1f} atoms/cm³)")
+    ax.grid(alpha=0.3)
+    st.pyplot(fig)
 
     st.markdown("---")
     st.subheader("目標深度 → 預估時間")
-    target_depth_um = st.number_input("目標蝕刻深度 (µm)", min_value=0.0,
-                                       value=100.0, step=10.0)
-    rate_choice = st.slider(
-        "使用蝕刻速率 (µm/min)（可在範圍內調整以模擬濃度/溫度差異）",
-        float(row["EtchRate_um_min_min"]), float(row["EtchRate_um_min_max"]),
-        float(row["EtchRate_um_min_min"]))
-    if rate_choice > 0:
-        est_time_min = target_depth_um / rate_choice
-        st.success(f"預估所需時間：約 **{est_time_min:.1f} 分鐘** "
-                    f"（{est_time_min/60:.2f} 小時）")
-
-    st.markdown("---")
-    st.subheader("完整資料表")
-    st.dataframe(general_wet, use_container_width=True)
+    target_nm = st.number_input("目標蝕刻深度 (nm)", min_value=0.0,
+                                 value=500.0, step=50.0)
+    rate_nm_min = rate_si / 10.0
+    if rate_nm_min > 0:
+        st.info(f"以 Si 蝕刻速率估算，預估所需時間：約 "
+                f"**{target_nm/rate_nm_min:.1f} 分鐘**")
 
 # =========================================================
-# ③ 蝕刻劑材料選擇比查詢
+# ④ 蝕刻劑材料選擇比查詢
 # =========================================================
-elif page == "③ 蝕刻劑材料選擇比查詢":
+elif page == "④ 蝕刻劑材料選擇比查詢":
     st.header("蝕刻劑 × 材料 蝕刻速率／選擇比查詢")
-    st.caption("資料來源：Comparison of Etch Rates for Selected Etchants and Target Materials")
+    st.caption("資料來源：課堂 PDF《Etching》- "
+               "Comparison of Etch Rates for Selected Etchants and Target Materials")
 
-    tab1, tab2 = st.tabs(["依蝕刻劑查詢", "依材料反查（找出蝕刻該材料最快/最慢的蝕刻劑）"])
+    tab1, tab2 = st.tabs(["依蝕刻劑查詢", "依材料反查"])
 
     with tab1:
         etch_choice = st.selectbox("選擇蝕刻劑",
@@ -262,29 +434,30 @@ elif page == "③ 蝕刻劑材料選擇比查詢":
 
     with tab2:
         material_choice = st.selectbox("選擇要蝕刻的材料", MATERIAL_COLS)
-        sub = etchant_material_rate[["Etchant", "Type", material_choice]].copy()
-        sub = sub.rename(columns={material_choice: "EtchRate_nm_min"})
-        sub = sub.dropna(subset=["EtchRate_nm_min"]).sort_values(
+        sub2 = etchant_material_rate[["Etchant", "Type", material_choice]].copy()
+        sub2 = sub2.rename(columns={material_choice: "EtchRate_nm_min"})
+        sub2 = sub2.dropna(subset=["EtchRate_nm_min"]).sort_values(
             "EtchRate_nm_min", ascending=False)
         st.write(f"針对 **{material_choice}**，各蝕刻劑速率（由快到慢）：")
-        st.dataframe(sub, use_container_width=True)
-        if len(sub) > 0:
-            st.success(f"蝕刻速度最快：**{sub.iloc[0]['Etchant']}** "
-                        f"({sub.iloc[0]['EtchRate_nm_min']} nm/min)")
+        st.dataframe(sub2, use_container_width=True)
+        if len(sub2) > 0:
+            st.success(f"蝕刻速度最快：**{sub2.iloc[0]['Etchant']}** "
+                        f"({sub2.iloc[0]['EtchRate_nm_min']} nm/min)")
             st.info(f"蝕刻速度最慢（最適合當作對此材料無害的 Mask）："
-                    f"**{sub.iloc[-1]['Etchant']}** "
-                    f"({sub.iloc[-1]['EtchRate_nm_min']} nm/min)")
+                    f"**{sub2.iloc[-1]['Etchant']}** "
+                    f"({sub2.iloc[-1]['EtchRate_nm_min']} nm/min)")
 
     st.markdown("---")
     st.subheader("完整資料表")
     st.dataframe(etchant_material_rate, use_container_width=True)
 
 # =========================================================
-# ④ 異向性蝕刻剖面模擬器
+# ⑤ 異向性蝕刻剖面模擬器
 # =========================================================
-elif page == "④ 異向性蝕刻剖面模擬器":
+elif page == "⑤ 異向性蝕刻剖面模擬器":
     st.header("異向性蝕刻（Anisotropic Etching）剖面模擬")
-    st.caption("模擬 <100> 矽晶片以 KOH/TMAH/EDP 進行 orientation-dependent etching (ODE) 的剖面")
+    st.caption("模擬 <100> 矽晶片以 KOH/TMAH/EDP 進行 orientation-dependent "
+               "etching (ODE) 的剖面。{111}面角度 54.7° 為晶格幾何常數。")
 
     col1, col2, col3 = st.columns(3)
     with col1:
@@ -294,13 +467,11 @@ elif page == "④ 異向性蝕刻剖面模擬器":
         depth_um = st.number_input("蝕刻深度 (µm)", min_value=1.0,
                                     value=50.0, step=5.0)
     with col3:
-        wafer_thickness_um = st.number_input("晶片厚度 (µm，選填，用於判斷是否貫穿)",
+        wafer_thickness_um = st.number_input("晶片厚度 (µm，選填)",
                                               min_value=0.0, value=0.0, step=10.0)
 
     mode = st.radio("蝕刻模式", ["異向性 (ODE, 54.7° {111}面)", "等向性 (Isotropic)"])
 
-    # 幾何計算：異向性蝕刻時，底部寬度隨深度縮減
-    # 側壁與垂直方向夾角 = 90 - 54.7 = 35.3°；每邊縮減量 = depth / tan(54.7°)
     if mode.startswith("異向性"):
         shrink_per_side = depth_um / np.tan(np.radians(ANGLE_111))
         bottom_width = opening_um - 2 * shrink_per_side
@@ -314,27 +485,22 @@ elif page == "④ 異向性蝕刻剖面模擬器":
             st.success(f"底部寬度 ≈ **{bottom_width:.1f} µm**"
                         f"（每側內縮 {shrink_per_side:.1f} µm）")
     else:
-        # 等向性：假設 undercut ≈ 蝕刻深度（等速蝕刻各方向）
         shrink_per_side = depth_um
-        bottom_width = opening_um  # 底部維持開口寬（但有underercut）
+        bottom_width = opening_um
         v_groove = False
-        st.info(f"等向性蝕刻：Mask 下方 undercut ≈ **{shrink_per_side:.1f} µm**（各方向蝕刻速率相同）")
+        st.info(f"等向性蝕刻：Mask 下方 undercut ≈ **{shrink_per_side:.1f} µm**")
 
-    if wafer_thickness_um > 0:
-        if depth_um >= wafer_thickness_um:
-            st.warning("⚠️ 蝕刻深度已達到或超過晶片厚度，可能已貫穿晶片！")
+    if wafer_thickness_um > 0 and depth_um >= wafer_thickness_um:
+        st.warning("⚠️ 蝕刻深度已達到或超過晶片厚度，可能已貫穿晶片！")
 
-    # 繪圖
     fig, ax = plt.subplots(figsize=(6, 4))
-    top_y = 0
-    bottom_y = -depth_um
+    top_y, bottom_y = 0, -depth_um
     half_open = opening_um / 2
 
     if mode.startswith("異向性"):
         if v_groove:
             apex_depth = half_open * np.tan(np.radians(ANGLE_111))
-            xs = [-half_open, 0, half_open]
-            ys = [top_y, -apex_depth, top_y]
+            xs, ys = [-half_open, 0, half_open], [top_y, -apex_depth, top_y]
         else:
             half_bottom = bottom_width / 2
             xs = [-half_open, -half_bottom, half_bottom, half_open]
@@ -342,13 +508,12 @@ elif page == "④ 異向性蝕刻剖面模擬器":
         ax.plot(xs, ys, 'b-', linewidth=2)
         ax.fill(xs, ys, alpha=0.3, color='deepskyblue')
     else:
-        half_bottom = half_open + shrink_per_side  # undercut 使底部變寬（示意）
+        half_bottom = half_open + shrink_per_side
         xs = [-half_open, -half_bottom, half_bottom, half_open]
         ys = [top_y, bottom_y, bottom_y, top_y]
         ax.plot(xs, ys, 'g-', linewidth=2)
         ax.fill(xs, ys, alpha=0.3, color='lightgreen')
 
-    # Mask 示意
     mask_w = opening_um * 1.5
     ax.plot([-mask_w/2, -half_open], [0, 0], 'k-', linewidth=6)
     ax.plot([half_open, mask_w/2], [0, 0], 'k-', linewidth=6)
@@ -360,50 +525,10 @@ elif page == "④ 異向性蝕刻剖面模擬器":
     ax.set_aspect('equal', adjustable='datalim')
     st.pyplot(fig)
 
-    st.markdown("""
-**計算原理：**
-- 異向性蝕刻：矽 <100> 晶片沿 {111} 面蝕刻，側壁角度固定為 **54.7°**，
-  每側內縮量 = 深度 ÷ tan(54.7°)。
-- 等向性蝕刻：假設各方向蝕刻速率相同，Mask 下方會產生 undercut，
-  undercut 量 ≈ 蝕刻深度。
-""")
-
 # =========================================================
-# ⑤ 乾蝕刻（電漿）計算器
+# ⑥ Mask 材料建議
 # =========================================================
-elif page == "⑤ 乾蝕刻（電漿）計算器":
-    st.header("乾蝕刻 / 電漿蝕刻 速率計算器")
-    st.caption("資料來源：Dry Etchants (CF4+CHF3+He, SF6+He, SF6, O2 plasma)")
-
-    dry_df = etchant_material_rate[etchant_material_rate["Type"] == "Dry"]
-    dry_choice = st.selectbox("選擇乾蝕刻條件（氣體/功率）",
-                               dry_df["Etchant"].tolist())
-    row = dry_df[dry_df["Etchant"] == dry_choice].iloc[0]
-
-    material_choice = st.selectbox("選擇欲蝕刻材料", MATERIAL_COLS, index=0)
-    rate = row[material_choice]
-
-    if pd.isna(rate):
-        st.warning("此條件對所選材料無資料。")
-    else:
-        st.metric(f"{material_choice} 蝕刻速率", f"{rate} nm/min")
-
-        target_nm = st.number_input("目標蝕刻深度 (nm)", min_value=0.0,
-                                     value=500.0, step=50.0)
-        if rate > 0:
-            est_time = target_nm / rate
-            st.success(f"預估所需時間：約 **{est_time:.1f} 分鐘**")
-        else:
-            st.info("此條件下該材料幾乎不被蝕刻（速率 = 0），可作為抗蝕刻層。")
-
-    st.markdown("---")
-    st.subheader("完整乾蝕刻資料表")
-    st.dataframe(dry_df, use_container_width=True)
-
-# =========================================================
-# ⑥ 蝕刻時間反算 / Mask 建議
-# =========================================================
-elif page == "⑥ 蝕刻時間反算 / Mask建議":
+elif page == "⑥ Mask 材料建議":
     st.header("Mask 材料建議工具")
     st.caption("依據所選蝕刻劑，從資料庫中找出「幾乎不被蝕刻」的材料作為建議 Mask")
 
@@ -428,39 +553,82 @@ elif page == "⑥ 蝕刻時間反算 / Mask建議":
         st.success(f"✅ 建議 Mask 材料：**{best_mask[0]}** "
                     f"（蝕刻速率僅 {best_mask[1]} nm/min）")
 
-        target_material = row["TargetMaterial"]
-        target_rate = None
-        # 嘗試找出與 TargetMaterial 名稱對應的欄位速率（若在 MATERIAL_COLS 中）
-        for m in MATERIAL_COLS:
-            if m.lower().replace("_", " ") in target_material.lower() or \
-               target_material.lower() in m.lower():
-                target_rate = row[m]
-                break
-
-        if best_mask[1] > 0 and target_rate and target_rate > 0:
-            selectivity = target_rate / best_mask[1]
-            st.info(f"與目標蝕刻材料的選擇比 ≈ **{selectivity:.1f} : 1**")
-        elif best_mask[1] == 0:
-            st.info("此材料幾乎完全不被蝕刻 → 選擇比視為極高，是理想的 Mask 材料。")
-
     st.markdown("---")
-    st.subheader("跨模組小工具：目標深度 → 建議蝕刻劑（速率排序）")
-    material_target = st.selectbox("選擇欲蝕刻的材料", MATERIAL_COLS, key="m2")
-    target_depth_nm = st.number_input("目標蝕刻深度 (nm)", min_value=0.0,
-                                       value=1000.0, step=100.0, key="d2")
-
-    sub = etchant_material_rate[["Etchant", "Type", material_target]].dropna()
-    sub = sub.rename(columns={material_target: "Rate"})
-    sub = sub[sub["Rate"] > 0].copy()
-    if len(sub) > 0:
-        sub["EstTime_min"] = target_depth_nm / sub["Rate"]
-        sub = sub.sort_values("EstTime_min")
-        st.dataframe(sub, use_container_width=True)
-        st.success(f"最快方案：**{sub.iloc[0]['Etchant']}**，"
-                    f"預估 {sub.iloc[0]['EstTime_min']:.1f} 分鐘")
+    st.subheader("硼掺杂 Etch-Stop 定量估算")
+    st.latex(r"\frac{R(N_B)}{R_0} \propto \left(\frac{N_{B,ref}}{N_B}\right)^4 \quad (N_B > 2\times10^{19}\,cm^{-3})")
+    st.caption("出處：Seidel, H. et al. (1990). \"Anisotropic etching of "
+               "crystalline silicon in alkaline solution. Part II: "
+               "Influence of dopants.\" J. Electrochem. Soc. 137, 3626-3632。"
+               "硼濃度超過約 2×10¹⁹ cm⁻³ 時，蝕刻速率的下降與硼濃度的四次方成反比。")
+    NB_REF = 2e19
+    NB = st.number_input("硼掺杂濃度 N_B (cm⁻³)", min_value=1e17, max_value=1e22,
+                          value=5e19, step=1e19, format="%.3e")
+    if NB > NB_REF:
+        reduction = (NB_REF / NB) ** 4
+        st.info(f"相對於未掺杂矽，蝕刻速率預估降至原速率的 "
+                f"**{reduction*100:.4f}%**（僅為定性趨勢估算，非精確定量模型）")
     else:
-        st.warning("查無可蝕刻此材料且速率>0的資料。")
+        st.info("硼濃度低於臨界值 (2×10¹⁹ cm⁻³)，尚不足以產生明顯的 etch-stop 效應。")
 
-st.sidebar.markdown("---")
-st.sidebar.caption("資料來源：課堂 PDF《Etching》\n"
-                    "Kovacs, Maluf & Peterson (1998); Williams & Muller")
+# =========================================================
+# ⑦ 參考文獻與資料來源
+# =========================================================
+elif page == "⑦ 參考文獻與資料來源":
+    st.header("參考文獻與資料來源")
+    st.markdown("""
+本應用程式所有動力學參數與公式均可追溯至以下文獻，方便查證：
+
+### 課堂資料
+- 課堂 PDF《Etching》。原始表格引用：
+  Kovacs, G.T.A., Maluf, N.I., Peterson, K.E. (1998). "Bulk micromachining
+  of silicon." *Proceedings of the IEEE*, 86(8), 1536-1551.
+  Williams, K. & Muller, R. (作者與年份見 PDF 原文)。
+
+### KOH 動力學參數
+- Seidel, H., Csepregi, L., Heuberger, A., Baumgärtel, H. (1990).
+  "Anisotropic etching of crystalline silicon in alkaline solution.
+  Part I: Orientation dependence and behavior of passivation layer."
+  *J. Electrochem. Soc.*, 137, 3612-3626. DOI: 10.1149/1.2086277
+- Seidel, H. et al. (1990). "Part II: Influence of dopants."
+  *J. Electrochem. Soc.*, 137, 3626-3632.
+- Shikida, M., Sato, K., Tokoro, K., Uchikawa, D. (2000). "Differences
+  in anisotropic etching properties of KOH and TMAH solutions."
+  *Sens. Actuators A*, 80, 179-188.
+- Tan, et al. / Wind, et al. -- 引用自二次文獻 (見下方 Handbook)，
+  原始期刊出處尚待進一步查證。
+
+### TMAH 動力學參數
+- Tabata, O. et al. -- 引用自二次文獻 (見下方 Handbook)，
+  原始期刊出處尚待進一步查證。
+- Shikida et al. 2000（同上）
+
+### KOH / TMAH / EDP 活化能比較
+- Dutta, S., Imran, M., Kumar, P., Pal, R., Datta, P., Chatterjee, R.
+  (2011). "Comparison of etch characteristics of KOH, TMAH and EDP
+  for bulk micromachining of silicon (110)." *Microsystem Technologies*.
+
+### 二次文獻彙整（Table 22.3, Eq. 22.3, 22.5）
+- Gosálvez, M.A., Zubel, I., Viinikka, E. (2015). "Wet Etching of
+  Silicon." Chapter 22 in *Handbook of Silicon Based MEMS Materials
+  and Technologies* (2nd ed.), Elsevier.
+  網址：https://www.sciencedirect.com/science/article/pii/B9780323299657000221
+
+### 乾蝕刻動力學模型
+- Ohring, M. (2002). *Materials Science of Thin Films* (2nd ed.),
+  Chapter 5 "Plasma and Ion Beam Processing of Thin Films",
+  Eq. (5-9a), (5-9b)。
+
+---
+
+### ⚠️ 尚未查證完成的項目（誠實列出）
+1. **KOH/TMAH wt%→mol/L 密度換算公式**（Handbook Eq. 22.6 中的
+   $a_0=0.9927, a_1=0.8666, a_2=0.3051$ 三個係數）：原文標註見
+   Section 22.14，但目前未能取得該章節完整內容，故本版本**未實作
+   濃度可調功能**，僅提供固定濃度下的溫度依賴模型。
+2. **Tan et al. / Wind et al. / Tabata et al.** 的原始期刊出處：
+   目前僅能確認其數據被 Gosálvez et al. (2015) 的 Table 22.3 引用，
+   原始期刊、卷期、頁碼尚未逐一查證。
+3. **EDP 的前置因子 R0**：文獻 (Dutta et al. 2011) 僅報告活化能
+   0.34 eV，未提供 R0 數值，本程式的 R0 是用課堂 PDF 單點資料反推，
+   已在程式介面中明確標示。
+""")
