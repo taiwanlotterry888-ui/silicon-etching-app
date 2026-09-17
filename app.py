@@ -45,6 +45,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.ticker import LogLocator, NullLocator
 
 st.set_page_config(page_title="Silicon Etching Kinetics Calculator",
                     layout="wide")
@@ -396,11 +397,15 @@ KOH/TMAH/EDP 這種可以套用單一 Arrhenius 公式的反應。目前文獻�
         ax.plot(T_range, R_range, 'b-')
         ax.axvline(T_C, color='red', linestyle='--', alpha=0.6)
         ax.plot([T_C], [rate], 'ro')
-        ax.set_xlabel("Temperature (deg C)")
-        ax.set_ylabel("Etch rate (um/min)")
+        ax.set_xlabel("Temperature (\u00b0C)")
+        ax.set_ylabel("Etch rate (\u00b5m/min)")
         ax.set_yscale('log')
-        ax.set_title(f"{etchant_choice} Arrhenius Plot - {row['Plane']} @ {row['Concentration']}")
-        ax.grid(alpha=0.3)
+        # 只顯示 10 的整數次方刻度（10^-1, 10^0, 10^1...），關閉次刻度，
+        # 避免 log 座標軸出現一堆沒有標籤、看起來參差不齊的細刻度。
+        ax.yaxis.set_major_locator(LogLocator(base=10.0))
+        ax.yaxis.set_minor_locator(NullLocator())
+        ax.set_title(f"{etchant_choice} Arrhenius Plot ({row['Plane']} plane, {row['Concentration']})")
+        ax.grid(alpha=0.3, which='major')
         st.pyplot(fig)
 
         st.markdown("---")
@@ -436,8 +441,8 @@ KOH/TMAH/EDP 這種可以套用單一 Arrhenius 公式的反應。目前文獻�
         ax.plot([T_C], [rate], 'ro')
         ax.plot([EDP_REF_T_C], [EDP_REF_RATE_UM_MIN], 'k*', markersize=12,
                 label='PDF reference point')
-        ax.set_xlabel("Temperature (deg C)")
-        ax.set_ylabel("Etch rate (um/min)")
+        ax.set_xlabel("Temperature (\u00b0C)")
+        ax.set_ylabel("Etch rate (\u00b5m/min)")
         ax.legend()
         ax.set_title("EDP Arrhenius Plot (R0 back-calculated)")
         ax.grid(alpha=0.3)
@@ -499,7 +504,7 @@ elif page == "③ 乾蝕刻化學動力學計算器（F原子模型）":
     fig, ax = plt.subplots(figsize=(6, 3.5))
     ax.plot(T_range, sel_range, 'purple')
     ax.axvline(T_C, color='red', linestyle='--', alpha=0.6)
-    ax.set_xlabel("Substrate Temperature (deg C)")
+    ax.set_xlabel("Substrate Temperature (\u00b0C)")
     ax.set_ylabel("Si : SiO2 Selectivity")
     ax.set_title(f"Selectivity vs. Temperature (C_F = 10^{C_F_exp:.1f} atoms/cm3)")
     ax.grid(alpha=0.3)
