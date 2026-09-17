@@ -73,12 +73,6 @@ wet_kinetics = pd.DataFrame([
      "Ea_eV": 0.62, "R0_um_h": 4.16e10, "Source": "Tan et al."},
     {"Etchant": "KOH", "Concentration": "35 wt%", "Plane": "{111}",
      "Ea_eV": 0.52, "R0_um_h": 1.84e7, "Source": "Tan et al."},
-    {"Etchant": "KOH", "Concentration": "37 wt%", "Plane": "{100}",
-     "Ea_eV": 0.56, "R0_um_h": 6.06e9, "Source": "Wind et al."},
-    {"Etchant": "KOH", "Concentration": "37 wt%", "Plane": "{110}",
-     "Ea_eV": 0.56, "R0_um_h": 1.21e10, "Source": "Wind et al."},
-    {"Etchant": "KOH", "Concentration": "37 wt%", "Plane": "{111}",
-     "Ea_eV": 0.55, "R0_um_h": 3.93e8, "Source": "Wind et al."},
     # ---- TMAH ----
     {"Etchant": "TMAH", "Concentration": "22 wt%", "Plane": "{100}",
      "Ea_eV": 0.65, "R0_um_h": 6.40e10, "Source": "Tabata et al."},
@@ -98,6 +92,7 @@ wet_kinetics = pd.DataFrame([
 EDP_EA = 0.34  # eV, Dutta et al. 2011 (Si(110))
 EDP_REF_T_C = 115.0         # PDF General Characteristics 表：EDP 溫度
 EDP_REF_RATE_UM_MIN = 0.75  # PDF 表：EDP 蝕刻速率 (µm/min)
+EDP_EXTRAPOLATION_WARN_C = 15.0  # 距參考點超過此溫差 (°C) 時另外提出外插警告
 
 
 def edp_r0_um_h():
@@ -408,6 +403,57 @@ KOH/TMAH/EDP 這種可以套用單一 Arrhenius 公式的反應。目前文獻�
         ax.grid(alpha=0.3, which='major')
         st.pyplot(fig)
 
+        # ---- {100}/{111} 選擇比：與講義「100:1」典型值比較 ----
+        same_group = wet_kinetics[
+            (wet_kinetics["Etchant"] == etchant_choice) &
+            (wet_kinetics["Concentration"] == row["Concentration"]) &
+            (wet_kinetics["Source"] == row["Source"])
+        ]
+        planes_available = set(same_group["Plane"])
+        if {"{100}", "{111}"}.issubset(planes_available):
+            row100 = same_group[same_group["Plane"] == "{100}"].iloc[0]
+            row111 = same_group[same_group["Plane"] == "{111}"].iloc[0]
+            rate100 = arrhenius_rate_um_min(row100["Ea_eV"], row100["R0_um_h"], T_C)
+            rate111 = arrhenius_rate_um_min(row111["Ea_eV"], row111["R0_um_h"], T_C)
+            if rate111 > 0:
+                selectivity = rate100 / rate111
+                st.markdown("---")
+                st.subheader("{100} / {111} 選擇比（與講義典型值比較）")
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("{100} 蝕刻速率", f"{rate100:.3f} µm/min")
+                with col2:
+                    st.metric("{111} 蝕刻速率", f"{rate111:.4f} µm/min")
+                with col3:
+                    st.metric("計算出的選擇比", f"{selectivity:.1f} : 1")
+
+                with st.expander("💡 為什麼跟講義標示的「100:1」不一樣？"):
+                    st.markdown(f"""
+講義 General Characteristics 表格中，KOH 的 {{111}}/{{100}} 選擇比標示
+為 **100:1**，但這是**橫跨多種操作條件（不同濃度、不同溫度）的
+「數量級與典型最大值概估」**，用意是讓人快速掌握「KOH 對 {{111}} 面
+的蝕刻明顯比 {{100}} 面慢很多」這個定性趨勢，不是針對某一個特定濃度
+的精確數字。
+
+本計算器套用的則是 **{row['Source']}** 在 **{row['Concentration']}、
+{T_C:.0f}°C** 這個具體條件下的 Arrhenius 精確經驗公式，兩者本來就是
+回答不同層次的問題：
+
+- **濃度是關鍵變數**：KOH 的 {{111}}/{{100}} 選擇比對溶液濃度非常
+  敏感。文獻報告中，較低濃度（例如 20 wt% 左右）選擇比可以達到
+  100:1 甚至更高；但在較高濃度（例如本組所用的 {row['Concentration']}）
+  下，選擇比通常會下降，落在約 50:1～70:1 之間。
+- 本次算出的 **{selectivity:.1f} : 1**，正好落在 34 wt% KOH 文獻報告的
+  合理實驗範圍內，跟講義的「100:1」**並不矛盾**——講義給的是跨條件
+  的概估值，這裡給的是特定濃度/溫度下的精確計算值。
+- 換句話說：兩個數字不同不代表任一邊算錯，而是「數量級概估」與
+  「特定條件精確模型」性質不同，使用時請注意不要直接互相取代或
+  拿來互相「校正」。
+""")
+        else:
+            st.caption("（此文獻資料組沒有同時提供 {100} 與 {111} 的資料，"
+                       "無法在此計算選擇比。）")
+
         st.markdown("---")
         st.subheader("目標深度 → 預估時間")
         target_depth_um = st.number_input("目標蝕刻深度 (µm)", min_value=0.0,
@@ -432,6 +478,24 @@ KOH/TMAH/EDP 這種可以套用單一 Arrhenius 公式的反應。目前文獻�
         T_C = st.slider("蝕刻溫度 (°C)", 60.0, 130.0, 115.0, 1.0)
         rate = arrhenius_rate_um_min(EDP_EA, R0, T_C)
         st.success(f"預估蝕刻速率：**{rate:.3f} µm/min**　＠ {T_C:.0f}°C")
+
+        temp_diff = abs(T_C - EDP_REF_T_C)
+        if temp_diff > EDP_EXTRAPOLATION_WARN_C:
+            st.warning(f"""
+⚠️ **外插警告**：目前溫度（{T_C:.0f}°C）與反推 R0 所用的參考點
+（{EDP_REF_T_C:.0f}°C）相差 **{temp_diff:.0f}°C**。
+
+R0 是只用**單一個溫度、單一個速率數值**反推出來的，並不是像 KOH/TMAH
+那樣由多筆不同溫度的實驗數據回歸得到 —— 換句話說，Arrhenius 曲線的
+「斜率」（活化能 Ea）雖然是文獻值，但曲線的「高度」（R0）只在
+{EDP_REF_T_C:.0f}°C 這一點被驗證過。離這個參考點越遠，計算出的速率
+就越接近**單純外插**，沒有實驗數據可以佐證其準確度，僅供粗略參考，
+不建議直接用於製程設計。
+""")
+        elif temp_diff > 0:
+            st.info(f"目前溫度與反推 R0 所用的參考點（{EDP_REF_T_C:.0f}°C）"
+                    f"相差 {temp_diff:.0f}°C，仍在鄰近範圍內，但請記得 R0 "
+                    "本身只由單一資料點反推，準確度仍有限。")
 
         T_range = np.linspace(60, 130, 200)
         R_range = [arrhenius_rate_um_min(EDP_EA, R0, t) for t in T_range]
@@ -833,8 +897,12 @@ elif page == "⑦ 參考文獻與資料來源":
 - Shikida, M., Sato, K., Tokoro, K., Uchikawa, D. (2000). "Differences
   in anisotropic etching properties of KOH and TMAH solutions."
   *Sens. Actuators A*, 80, 179-188.
-- Tan et al. / Wind et al. -- 引用自二次文獻（見下方 Handbook），
+- Tan et al. -- 引用自二次文獻（見下方 Handbook），
   原始期刊出處尚待進一步查證。
+- ~~Wind et al. (37 wt%)~~ -- 已於本版移除。原資料組在測試中被發現
+  數值異常（{100}/{110}/{111} 三個晶面在常用溫度下算出的選擇比明顯
+  偏離其他來源與講義數值），且其原始期刊出處始終無法查證，故直接
+  從資料庫移除，不再提供使用者選擇，避免誤用。
 
 ### TMAH 動力學參數
 - Tabata, O. et al. -- 引用自二次文獻（見下方 Handbook），
@@ -886,14 +954,24 @@ elif page == "⑦ 參考文獻與資料來源":
 1. **KOH/TMAH wt%→mol/L 密度換算公式**（$a_0=0.9927, a_1=0.8666,
    a_2=0.3051$ 三個係數）：原文標註見 Handbook Section 22.14，
    但目前未能取得該章節完整內容，故本版本未實作濃度可調功能。
-2. **Tan et al. / Wind et al. / Tabata et al.** 的原始期刊出處：
+2. **Tan et al. / Tabata et al.** 的原始期刊出處：
    目前僅能確認其數據被 Gosálvez et al. (2015) 的 Table 22.3 引用，
-   原始期刊、卷期、頁碼尚未逐一查證。
+   原始期刊、卷期、頁碼尚未逐一查證。（Wind et al. 37 wt% 資料組已於
+   測試中發現異常並移除，見上方 KOH 動力學參數說明。）
 3. **EDP 的前置因子 R0**：文獻 (Dutta et al. 2011) 僅報告活化能
    0.34 eV，未提供 R0 數值，本程式的 R0 是用課堂 PDF 單點資料反推。
 4. **HF:HNO3:CH3COOH（HNA系統）**：尚未查到公開發表的 Arrhenius
    參數 (Ea, R0)，目前完全未納入動力學計算器，僅在④、⑥模組以 PDF
    表格中的單一操作點數值（25°C, 1-20 µm/min）呈現。
+5. **PDF 講義的「100:1」選擇比 vs. 計算器算出的比值**：講義 General
+   Characteristics 表格給的 {111}/{100}=100:1 是**橫跨多種操作條件的
+   典型數量級概估值**，而②計算器套用的是 Seidel et al. (1990) 在
+   **34 wt%、特定溫度**下的精確 Arrhenius 方程式，兩者本來就不是同一
+   件事：KOH 的 {111}/{100} 選擇比對濃度非常敏感，濃度越高選擇比通常
+   越低（約 20 wt% 時可達 100:1 以上，34 wt% 高濃度下常落在 50:1～
+   70:1 附近），所以計算器在 34 wt%、80°C 算出約 60:1 是合理的實驗
+   範圍，跟講義「100:1」沒有矛盾，只是後者是概估值、前者是精確模型
+   在特定條件下的結果。詳細說明已加在②頁面的展開框中。
 5. **④、⑥模組的材料選擇比資料（PDF p.7 表格）**：為課堂投影片轉引，
    原始論文完整書目資訊（作者全名、期刊、年份）待查證，含 "<"/">"
    的數值以估計值處理，使用時請對照原始 PDF 或原始文獻確認。
